@@ -1,0 +1,21 @@
+# --- Assets & Data (The Heavy Stuff) ---
+Assets/Animations/
+Assets/Characters/*.fbx
+Assets/Backgrounds/
+
+# --- Outputs (The Final Videos) ---
+Outputs/
+temp_renders/
+
+# --- Python Junk ---
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+venv/
+env/
+
+# --- Blender Junk ---
+*.blend1
+*.blend2
+quit.blend
