@@ -98,7 +98,7 @@ SUBTITLE_WORDS_PER_LINE = 1
 
 # ─── FFmpeg Subtitles ────────────────────────────────────────────────
 SUBTITLE_FONT = "Arial"
-SUBTITLE_FONTSIZE = 48
+SUBTITLE_FONTSIZE = 60
 SUBTITLE_COLOR = "&H00FFFFFF"  # White (ASS format: AABBGGRR)
 SUBTITLE_OUTLINE_COLOR = "&H00000000"  # Black outline
 SUBTITLE_OUTLINE_WIDTH = 3

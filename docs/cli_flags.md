@@ -46,8 +46,8 @@ python main.py "A curious turtle discovers a hidden garden"
 
 ## Subtitles
 
-- `--subtitle-words <int>`
-  - Number of words per subtitle line.
+- `--subtitle-words <int|fit>`
+  - Number of words per subtitle line, or `fit` to auto‑chunk 2–4 words and break at punctuation.
   - Default: `1` (word‑by‑word).
 
 ## Camera
@@ -59,7 +59,7 @@ python main.py "A curious turtle discovers a hidden garden"
   - Default: `random`
 - `--camera-seed <int>`
   - Seed for deterministic camera (and background) selection.
-  - Default: none.
+  - Default: current time (different every run).
 
 ## Backgrounds (3D)
 
@@ -79,4 +79,7 @@ python main.py --narration mixed --tts-voice-narrator af_heart --tts-voice-chara
 
 # Force a 3D background category and static camera
 python main.py --bg-category forest --camera-motion static "A curious turtle discovers a hidden garden"
+
+# Fit subtitles to 3–4 words and break on punctuation
+python main.py --subtitle-words fit "A curious turtle discovers a hidden garden"
 ```

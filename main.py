@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import random
+import time
 import subprocess
 import sys
 import wave
@@ -354,19 +355,28 @@ def _pick_background_scene(scene: dict, bg_override: str | None, seed: int | Non
 
 
 def _pick_camera_params(scene_id: int, motion: str, seed: int | None) -> dict:
-    base_x, base_y, base_z = 0.0, 1.4, 3.2
-    side_options = [0.0, 0.0, 0.35, -0.35, 0.70, -0.70, 1.05, -1.05]
+    # Low-angle framing: camera lower; look-at kept neutral so character stays centered.
+    base_y, base_z = 1.0, 2.0
+    look_at_offset = [0.0, 0.0, 0.0]
+
+    magnitudes = [0.0, 0.6, 1.2, 1.8]
     vertical_options = [-0.25, 0.0, 0.25]
-    rng = random.Random((seed or 1337) + int(scene_id))
-    side = rng.choice(side_options)
+
+    idx = (seed or 1337) + int(scene_id) * 1013
+    rng = random.Random(idx)
+    mag = rng.choice(magnitudes)
+    if mag == 0.0:
+        side = 0.0
+    else:
+        side = mag * rng.choice([-1.0, 1.0])
     vertical = rng.choice(vertical_options)
 
     camera_offset = [side, base_y + vertical, base_z]
-    look_at_offset = [0.0, 1.2, 0.0]
 
     motion_choice = motion
     if motion == "random":
-        motion_choice = rng.choice(["static", "drift"])
+        # Deterministic mix to guarantee some motion across multiple scenes.
+        motion_choice = "drift" if (idx % 2 == 0) else "static"
 
     drift = {
         "camera_drift_enabled": False,
@@ -377,9 +387,10 @@ def _pick_camera_params(scene_id: int, motion: str, seed: int | None) -> dict:
     }
 
     if motion_choice == "drift":
+        rng = random.Random(idx * 31)
         axis = rng.choice([(1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
-        amount = rng.uniform(0.05, 0.15)
-        speed = rng.uniform(0.4, 0.8)
+        amount = rng.uniform(0.08, 0.18)
+        speed = rng.uniform(0.35, 0.7)
         phase = rng.uniform(0.0, 6.28318)
         drift = {
             "camera_drift_enabled": True,
@@ -678,6 +689,65 @@ def generate_subtitles(audio_path: Path, language: str = "en") -> list[dict]:
         raise
 
 
+def _chunk_subtitle_words(words: list[dict], mode: str | int) -> list[list[dict]]:
+    if isinstance(mode, str) and mode.lower() == "fit":
+        chunks: list[list[dict]] = []
+        current: list[dict] = []
+        punct = (".", ",", "!", "?", ";", ":", "…")
+
+        i = 0
+        while i < len(words):
+            current.append(words[i])
+            word_text = str(words[i].get("word", ""))
+            ends_punct = word_text.endswith(punct)
+            next_word_punct = False
+            if i + 1 < len(words):
+                next_word = str(words[i + 1].get("word", ""))
+                next_word_punct = next_word.endswith(punct)
+
+            # Rule: end chunk on punctuation if we have at least 2 words
+            if ends_punct and len(current) >= 2:
+                chunks.append(current)
+                current = []
+                i += 1
+                continue
+
+            # Target chunk size: 2-4 words. Try to avoid leaving a 1-word tail.
+            if len(current) >= 2:
+                remaining = len(words) - (i + 1)
+                # If we've hit 4 words, or if leaving 1 word tail, finalize.
+                if len(current) >= 4:
+                    if next_word_punct and len(current) >= 3:
+                        # Keep punctuation word with a 2-word chunk.
+                        carry = current.pop()
+                        chunks.append(current)
+                        current = [carry]
+                    else:
+                        chunks.append(current)
+                        current = []
+                elif remaining == 1:
+                    chunks.append(current)
+                    current = []
+            i += 1
+
+        if current:
+            # Avoid 1-word tail: merge into previous chunk when possible.
+            if len(current) == 1 and chunks:
+                if len(chunks[-1]) < 4:
+                    chunks[-1].append(current[0])
+                else:
+                    # Rebalance: move one word from previous chunk to make a 2-word tail.
+                    moved = chunks[-1].pop()
+                    chunks.append([moved, current[0]])
+            else:
+                chunks.append(current)
+
+        return chunks
+
+    chunk_size = max(1, int(mode))
+    return [words[i:i + chunk_size] for i in range(0, len(words), chunk_size)]
+
+
 def _generate_ass_subtitles(all_scenes_words: list[dict], output_path: Path) -> Path:
     """Generate an ASS subtitle file with word-by-word highlighting."""
     header = f"""[Script Info]
@@ -695,10 +765,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
     events = []
-    # Group words into subtitle lines (configurable words per line)
-    chunk_size = max(1, int(config.SUBTITLE_WORDS_PER_LINE))
-    for i in range(0, len(all_scenes_words), chunk_size):
-        chunk = all_scenes_words[i:i + chunk_size]
+    # Group words into subtitle lines
+    mode = config.SUBTITLE_WORDS_PER_LINE
+    for chunk in _chunk_subtitle_words(all_scenes_words, mode):
         if not chunk:
             continue
         start = chunk[0]["start"]
@@ -878,7 +947,12 @@ def run_pipeline(
     tts_voice_character = tts_voice_character or config.KOKORO_VOICE_CHARACTER or tts_voice
     camera_motion = camera_motion or config.DEFAULT_CAMERA_MOTION
     if subtitle_words is not None:
-        config.SUBTITLE_WORDS_PER_LINE = int(subtitle_words)
+        if str(subtitle_words).strip().lower() == "fit":
+            config.SUBTITLE_WORDS_PER_LINE = "fit"
+        else:
+            config.SUBTITLE_WORDS_PER_LINE = int(subtitle_words)
+    if camera_seed is None:
+        camera_seed = int(time.time())
 
     voice_map = {
         "default": tts_voice,
@@ -1040,9 +1114,9 @@ def main():
     )
     parser.add_argument(
         "--subtitle-words",
-        type=int,
-        default=config.SUBTITLE_WORDS_PER_LINE,
-        help="Words per subtitle line (default: 1)",
+        type=str,
+        default=str(config.SUBTITLE_WORDS_PER_LINE),
+        help="Words per subtitle line (number) or 'fit' for 3–4 words with punctuation breaks",
     )
     parser.add_argument(
         "--camera-motion",
