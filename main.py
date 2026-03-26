@@ -11,6 +11,7 @@ Usage:
 import argparse
 import json
 import logging
+import random
 import subprocess
 import sys
 import wave
@@ -230,11 +231,16 @@ Given a story idea, write a script as a JSON object.
 
 Rules:
 - 5 to 8 scenes maximum
-- Each scene has ONE line of dialogue (~8-15 words)
+- Each scene has 1-2 short lines total (~8-15 words per line)
 - Total dialogue should be speakable in about 50-60 seconds
+- Narration mode: {narration_mode}
+  - third: narrator only (speaker="narrator")
+  - first: character only (speaker="character")
+  - mixed: narrator + occasional character line
 - Choose an animation category from this list for each scene:
   {categories}
-- Write a vivid background description for each scene (for AI image generation)
+- Choose a 3D background category from this list:
+  {bg_categories}
 - Include an emotion tag for each scene
 
 Respond with ONLY valid JSON (no markdown fences):
@@ -243,22 +249,30 @@ Respond with ONLY valid JSON (no markdown fences):
   "scenes": [
     {{
       "id": 1,
-      "dialogue": "...",
       "emotion": "curious|happy|sad|excited|angry|scared|thoughtful|playful",
-      "anim_category": "WALK|RUN|JUMP|TALK_GESTURE|SIT_STAND|DANCE|SPORTS|DAILY_LIFE|ANIMAL|MISC",
-      "bg_description": "A vivid description of the background scene, vertical composition, 9:16"
+      "anim_category": "<one of the animation categories above>",
+      "bg_category": "<one of the background categories above>",
+      "lines": [
+        {{ "speaker": "narrator|character", "text": "..." }}
+      ]
     }}
   ]
 }}
 """
 
 
-def generate_script(story_idea: str, max_scenes: int = 0) -> dict:
+def generate_script(story_idea: str, max_scenes: int = 0, narration_mode: str = None) -> dict:
     """Ask the LLM to generate a structured script from a story idea."""
     log.info("📝 Step 1: Generating script...")
 
     categories = ", ".join(config.ANIMATION_CATEGORIES)
-    system = SCRIPT_SYSTEM_PROMPT.format(categories=categories)
+    bg_categories = ", ".join(config.BACKGROUND_CATEGORIES)
+    narration = narration_mode or config.DEFAULT_NARRATION_MODE
+    system = SCRIPT_SYSTEM_PROMPT.format(
+        categories=categories,
+        bg_categories=bg_categories,
+        narration_mode=narration,
+    )
     
     if max_scenes > 0:
         system = system.replace("- 5 to 8 scenes maximum", f"- Exactly {max_scenes} scenes")
@@ -288,6 +302,101 @@ def generate_script(story_idea: str, max_scenes: int = 0) -> dict:
     return script
 
 
+def _normalize_lines(scene: dict, narration_mode: str) -> list[dict]:
+    lines = scene.get("lines")
+    normalized: list[dict] = []
+
+    if isinstance(lines, list):
+        for line in lines:
+            speaker = str(line.get("speaker", "narrator")).strip().lower()
+            if speaker not in {"narrator", "character"}:
+                speaker = "narrator"
+            text = str(line.get("text", "")).strip()
+            if text:
+                normalized.append({"speaker": speaker, "text": text})
+
+    if not normalized and scene.get("dialogue"):
+        normalized = [{"speaker": "narrator", "text": str(scene["dialogue"]).strip()}]
+
+    if narration_mode == "third":
+        for line in normalized:
+            line["speaker"] = "narrator"
+    elif narration_mode == "first":
+        for line in normalized:
+            line["speaker"] = "character"
+    elif narration_mode == "mixed":
+        has_character = any(l["speaker"] == "character" for l in normalized)
+        if not has_character and len(normalized) > 1:
+            normalized[-1]["speaker"] = "character"
+
+    return normalized
+
+
+def _pick_background_scene(scene: dict, bg_override: str | None, seed: int | None) -> str:
+    category = (bg_override or scene.get("bg_category", "")).strip().lower()
+    if not category:
+        return ""
+    cat_dir = config.BACKGROUNDS_LIB / category
+    if not cat_dir.exists():
+        log.warning(f"  ⚠️ Background category '{category}' not found")
+        return ""
+
+    candidates = []
+    for ext in ("*.fbx", "*.glb", "*.gltf", "*.tscn"):
+        candidates.extend(cat_dir.glob(ext))
+    if not candidates:
+        log.warning(f"  ⚠️ No background scenes found in {cat_dir}")
+        return ""
+
+    scene_id = int(scene.get("id", 0))
+    rng = random.Random((seed or 1337) + scene_id * 17)
+    return str(rng.choice(sorted(candidates)))
+
+
+def _pick_camera_params(scene_id: int, motion: str, seed: int | None) -> dict:
+    base_x, base_y, base_z = 0.0, 1.4, 3.2
+    side_options = [0.0, 0.0, 0.35, -0.35, 0.70, -0.70, 1.05, -1.05]
+    vertical_options = [-0.25, 0.0, 0.25]
+    rng = random.Random((seed or 1337) + int(scene_id))
+    side = rng.choice(side_options)
+    vertical = rng.choice(vertical_options)
+
+    camera_offset = [side, base_y + vertical, base_z]
+    look_at_offset = [0.0, 1.2, 0.0]
+
+    motion_choice = motion
+    if motion == "random":
+        motion_choice = rng.choice(["static", "drift"])
+
+    drift = {
+        "camera_drift_enabled": False,
+        "camera_drift_axis": [0.0, 0.0, 0.0],
+        "camera_drift_amount": 0.0,
+        "camera_drift_speed": 0.0,
+        "camera_drift_phase": 0.0,
+    }
+
+    if motion_choice == "drift":
+        axis = rng.choice([(1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
+        amount = rng.uniform(0.05, 0.15)
+        speed = rng.uniform(0.4, 0.8)
+        phase = rng.uniform(0.0, 6.28318)
+        drift = {
+            "camera_drift_enabled": True,
+            "camera_drift_axis": list(axis),
+            "camera_drift_amount": amount,
+            "camera_drift_speed": speed,
+            "camera_drift_phase": phase,
+        }
+
+    return {
+        "camera_offset": camera_offset,
+        "look_at_offset": look_at_offset,
+        "camera_motion": motion_choice,
+        **drift,
+    }
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  3. SEMANTIC DIRECTOR — Intelligent animation selection
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -300,6 +409,8 @@ def semantic_director(scene: dict) -> Path:
     category = scene.get("anim_category", "talk")
     emotion = scene.get("emotion", "neutral")
     dialogue = scene.get("dialogue", "")
+    if not dialogue and isinstance(scene.get("lines"), list):
+        dialogue = " ".join(str(l.get("text", "")).strip() for l in scene["lines"] if l.get("text"))
 
     category_aliases = {
         "talk_gesture": "talk",
@@ -407,44 +518,54 @@ def _rank_candidates(anims: list[dict], emotion: str, dialogue: str) -> list[dic
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  4. VOICE GENERATION (Kokoro TTS)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def generate_voice(text: str, output_path: Path) -> float:
+def _kokoro_lang_code(lang: str) -> str:
+    code = (lang or "").strip().lower()
+    if not code:
+        code = config.KOKORO_DEFAULT_LANG
+    return config.KOKORO_LANG_MAP.get(code, config.KOKORO_LANG_MAP.get("en", "a"))
+
+
+def generate_scene_audio(lines: list[dict], output_path: Path, voice_map: dict, lang: str) -> float:
     """
-    Generate speech audio using Kokoro TTS.
+    Generate speech audio using Kokoro TTS for multiple lines.
     Returns: audio duration in seconds.
     """
-    log.info(f"  🎙️ Generating TTS: '{text[:50]}...'")
-
     try:
         from kokoro import KPipeline
-
-        pipeline = KPipeline(lang_code="a")  # 'a' = American English
-        generator = pipeline(
-            text,
-            voice=config.KOKORO_VOICE,
-            speed=config.KOKORO_SPEED,
-        )
-
-        # Kokoro yields chunks — concatenate them
         import soundfile as sf
         import numpy as np
-
-        all_audio = []
-        for _, _, audio_chunk in generator:
-            all_audio.append(audio_chunk)
-
-        if not all_audio:
-            raise RuntimeError("Kokoro TTS produced no audio")
-
-        full_audio = np.concatenate(all_audio)
-        sf.write(str(output_path), full_audio, config.KOKORO_SAMPLE_RATE)
-
-        duration = len(full_audio) / config.KOKORO_SAMPLE_RATE
-        log.info(f"  ✅ Audio saved: {output_path.name} ({duration:.1f}s)")
-        return duration
-
     except ImportError:
         log.error("  ❌ Kokoro not installed. Run: pip install kokoro")
         raise
+
+    lang_code = _kokoro_lang_code(lang)
+    pipeline = KPipeline(lang_code=lang_code)
+
+    all_audio = []
+    for line in lines:
+        speaker = str(line.get("speaker", "narrator")).strip().lower()
+        text = str(line.get("text", "")).strip()
+        if not text:
+            continue
+        voice = voice_map.get(speaker, voice_map.get("default", config.KOKORO_VOICE))
+        log.info(f"  🎙️ Generating TTS ({speaker}): '{text[:50]}...'")
+        generator = pipeline(
+            text,
+            voice=voice,
+            speed=config.KOKORO_SPEED,
+        )
+
+        for _, _, audio_chunk in generator:
+            all_audio.append(audio_chunk)
+
+    if not all_audio:
+        raise RuntimeError("Kokoro TTS produced no audio")
+
+    full_audio = np.concatenate(all_audio)
+    sf.write(str(output_path), full_audio, config.KOKORO_SAMPLE_RATE)
+    duration = len(full_audio) / config.KOKORO_SAMPLE_RATE
+    log.info(f"  ✅ Audio saved: {output_path.name} ({duration:.1f}s)")
+    return duration
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -519,7 +640,7 @@ def render_scene(scene_data: dict, scene_dir: Path, dry_run: bool = False) -> Pa
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  7. SUBTITLE GENERATION (Whisper)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def generate_subtitles(audio_path: Path) -> list[dict]:
+def generate_subtitles(audio_path: Path, language: str = "en") -> list[dict]:
     """
     Use Whisper to generate word-level timestamps from audio.
     Returns: list of {word, start, end} dicts.
@@ -536,7 +657,7 @@ def generate_subtitles(audio_path: Path) -> list[dict]:
             result = model.transcribe(
                 str(audio_path),
                 word_timestamps=True,
-                language="en",
+                language=language,
                 fp16=False,
             )
 
@@ -574,8 +695,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
     events = []
-    # Group words into subtitle lines (3-5 words per line)
-    chunk_size = 4
+    # Group words into subtitle lines (configurable words per line)
+    chunk_size = max(1, int(config.SUBTITLE_WORDS_PER_LINE))
     for i in range(0, len(all_scenes_words), chunk_size):
         chunk = all_scenes_words[i:i + chunk_size]
         if not chunk:
@@ -702,7 +823,21 @@ def assemble_final_video(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  MAIN PIPELINE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def run_pipeline(story_idea: str, dry_run: bool = False, draft: bool = False, test_scenes: int = 0):
+def run_pipeline(
+    story_idea: str,
+    dry_run: bool = False,
+    draft: bool = False,
+    test_scenes: int = 0,
+    narration_mode: str = None,
+    tts_lang: str = None,
+    tts_voice: str = None,
+    tts_voice_narrator: str = None,
+    tts_voice_character: str = None,
+    subtitle_words: int | None = None,
+    camera_motion: str | None = None,
+    camera_seed: int | None = None,
+    bg_category: str | None = None,
+):
     """Full pipeline: story → rendered YouTube Short."""
 
     log.info("=" * 60)
@@ -736,7 +871,22 @@ def run_pipeline(story_idea: str, dry_run: bool = False, draft: bool = False, te
             raise FileNotFoundError("Failed to generate Master_Scene.blend")
 
     # ── Step 1: Generate Script ──
-    script = generate_script(story_idea, max_scenes=test_scenes)
+    narration_mode = narration_mode or config.DEFAULT_NARRATION_MODE
+    tts_lang = tts_lang or config.KOKORO_DEFAULT_LANG
+    tts_voice = tts_voice or config.KOKORO_VOICE
+    tts_voice_narrator = tts_voice_narrator or config.KOKORO_VOICE_NARRATOR or tts_voice
+    tts_voice_character = tts_voice_character or config.KOKORO_VOICE_CHARACTER or tts_voice
+    camera_motion = camera_motion or config.DEFAULT_CAMERA_MOTION
+    if subtitle_words is not None:
+        config.SUBTITLE_WORDS_PER_LINE = int(subtitle_words)
+
+    voice_map = {
+        "default": tts_voice,
+        "narrator": tts_voice_narrator,
+        "character": tts_voice_character,
+    }
+
+    script = generate_script(story_idea, max_scenes=test_scenes, narration_mode=narration_mode)
     import re
     title = re.sub(r'[^a-z0-9_]', '', script.get("title", "untitled").replace(" ", "_").lower())[:30]
 
@@ -749,7 +899,10 @@ def run_pipeline(story_idea: str, dry_run: bool = False, draft: bool = False, te
 
         scene_id = scene["id"]
         log.info(f"\n{'─' * 40}")
-        log.info(f"🎬 Scene {scene_id}: \"{scene['dialogue'][:40]}...\"")
+        preview_text = scene.get("dialogue", "")
+        if not preview_text and isinstance(scene.get("lines"), list):
+            preview_text = " ".join(str(l.get("text", "")).strip() for l in scene["lines"] if l.get("text"))
+        log.info(f"🎬 Scene {scene_id}: \"{preview_text[:40]}...\"")
         log.info(f"{'─' * 40}")
 
         scene_dir = config.TEMP_DIR / f"scene_{scene_id:02d}"
@@ -767,28 +920,29 @@ def run_pipeline(story_idea: str, dry_run: bool = False, draft: bool = False, te
 
         # 3. Generate voice audio
         audio_path = scene_dir / "dialogue.wav"
+        lines = _normalize_lines(scene, narration_mode)
         if dry_run:
             log.info("  ⏭️  [DRY-RUN] Skipping TTS")
             audio_duration = 5.0
         else:
-            audio_duration = generate_voice(scene["dialogue"], audio_path)
+            audio_duration = generate_scene_audio(lines, audio_path, voice_map, tts_lang)
 
-        # 4. Generate background image
-        bg_path_expected = scene_dir / "background.png"
+        # 4. Pick 3D background scene (green screen fallback)
         if dry_run:
-            log.info("  ⏭️  [DRY-RUN] Skipping background generation")
-            bg_path = ""
+            log.info("  ⏭️  [DRY-RUN] Skipping background selection")
+            bg_scene_path = ""
         else:
-            actual_bg = generate_background(scene["bg_description"], bg_path_expected)
-            bg_path = str(actual_bg) if actual_bg else ""
+            bg_scene_path = _pick_background_scene(scene, bg_category, camera_seed)
 
         # 5. Render in Godot
+        cam_params = _pick_camera_params(scene_id, camera_motion, camera_seed)
         scene_render_data = {
             "id": scene_id,
-            "scene_text": scene["dialogue"],
+            "scene_text": " ".join([l["text"] for l in lines]) if lines else scene.get("dialogue", ""),
             "character_file_path": str(config.CHARACTERS_DIR / config.DEFAULT_CHARACTER),
             "animation_file_path": str(anim_path),
-            "background_image_path": bg_path,
+            "background_image_path": "",
+            "background_scene_file_path": bg_scene_path,
             "audio_file_path": str(audio_path),
             "audio_duration": audio_duration,
             "output_mp4": str(scene_dir / "render.mp4"),
@@ -797,6 +951,7 @@ def run_pipeline(story_idea: str, dry_run: bool = False, draft: bool = False, te
             "movie_file": str(scene_dir / "movie.avi"),
             "fps": config.RENDER_FPS,
             "resolution": [540, 960] if draft else [config.RENDER_WIDTH, config.RENDER_HEIGHT],
+            **cam_params,
         }
 
         render_path = render_scene(scene_render_data, scene_dir, dry_run=dry_run)
@@ -804,7 +959,7 @@ def run_pipeline(story_idea: str, dry_run: bool = False, draft: bool = False, te
         # Generate subtitles from audio
         words = []
         if not dry_run and audio_path.exists():
-            words = generate_subtitles(audio_path)
+            words = generate_subtitles(audio_path, language=tts_lang)
 
         scene_clips.append({
             "video": render_path,
@@ -852,10 +1007,80 @@ def main():
         default=0,
         help="Limit the number of scenes generated (e.g., --test-scenes 3)",
     )
+    parser.add_argument(
+        "--narration",
+        type=str,
+        choices=["third", "first", "mixed"],
+        default=config.DEFAULT_NARRATION_MODE,
+        help="Narration mode: third, first, or mixed",
+    )
+    parser.add_argument(
+        "--tts-lang",
+        type=str,
+        default=config.KOKORO_DEFAULT_LANG,
+        help="Kokoro language code (e.g., en)",
+    )
+    parser.add_argument(
+        "--tts-voice",
+        type=str,
+        default=config.KOKORO_VOICE,
+        help="Default Kokoro voice",
+    )
+    parser.add_argument(
+        "--tts-voice-narrator",
+        type=str,
+        default=config.KOKORO_VOICE_NARRATOR,
+        help="Kokoro voice for narrator (mixed mode)",
+    )
+    parser.add_argument(
+        "--tts-voice-character",
+        type=str,
+        default=config.KOKORO_VOICE_CHARACTER,
+        help="Kokoro voice for character (mixed mode)",
+    )
+    parser.add_argument(
+        "--subtitle-words",
+        type=int,
+        default=config.SUBTITLE_WORDS_PER_LINE,
+        help="Words per subtitle line (default: 1)",
+    )
+    parser.add_argument(
+        "--camera-motion",
+        type=str,
+        choices=["static", "random", "drift"],
+        default=config.DEFAULT_CAMERA_MOTION,
+        help="Camera motion style",
+    )
+    parser.add_argument(
+        "--camera-seed",
+        type=int,
+        default=None,
+        help="Seed for deterministic camera/background selection",
+    )
+    parser.add_argument(
+        "--bg-category",
+        type=str,
+        default="",
+        help="Override background category for all scenes",
+    )
     args = parser.parse_args()
 
     try:
-        run_pipeline(args.story, dry_run=args.dry_run, draft=args.draft, test_scenes=args.test_scenes)
+        run_pipeline(
+            args.story,
+            dry_run=args.dry_run,
+            draft=args.draft,
+            test_scenes=args.test_scenes,
+            narration_mode=args.narration,
+            tts_lang=args.tts_lang,
+            tts_voice=args.tts_voice,
+            tts_voice_narrator=args.tts_voice_narrator,
+            tts_voice_character=args.tts_voice_character,
+            subtitle_words=args.subtitle_words,
+            camera_motion=args.camera_motion,
+            camera_seed=args.camera_seed,
+            bg_category=args.bg_category or None,
+        )
     except Exception as e:
         log.error(f"\n💥 Pipeline failed: {e}")
         sys.exit(1)

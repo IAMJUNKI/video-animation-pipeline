@@ -122,6 +122,27 @@ func _setup_environment() -> void:
     var plane := _render_scene.get_node("BackgroundPlane") as MeshInstance3D
     _ensure_background_plane(plane)
 
+    var bg_scene_path := str(_config.get("background_scene_res_path", ""))
+    if bg_scene_path == "":
+        bg_scene_path = str(_config.get("background_scene_file_path", ""))
+    if bg_scene_path != "":
+        var bg_scene := _load_packed_scene(bg_scene_path)
+        if bg_scene != null:
+            var bg_root := _render_scene.get_node_or_null("BackgroundRoot")
+            if bg_root == null:
+                bg_root = Node3D.new()
+                bg_root.name = "BackgroundRoot"
+                _render_scene.add_child(bg_root)
+            else:
+                for child in bg_root.get_children():
+                    child.queue_free()
+            var bg_instance := bg_scene.instantiate()
+            bg_root.add_child(bg_instance)
+            plane.visible = false
+            env_node.environment.background_mode = Environment.BG_COLOR
+            env_node.environment.background_color = Color(0, 0, 0, 1)
+            return
+
     var bg_path := str(_config.get("background_res_path", ""))
     if bg_path == "":
         bg_path = str(_config.get("background_image_path", ""))
@@ -181,6 +202,18 @@ func _setup_character_and_animation() -> void:
         character_root.set("camera_snap_distance", float(_config.get("camera_snap_distance")))
     if _config.has("loop_correction_threshold"):
         character_root.set("loop_correction_threshold", float(_config.get("loop_correction_threshold")))
+    if _config.has("camera_drift_enabled"):
+        character_root.set("camera_drift_enabled", bool(_config.get("camera_drift_enabled")))
+    if _config.has("camera_drift_axis"):
+        var axis: Array = _config.get("camera_drift_axis", [])
+        if axis is Array and axis.size() == 3:
+            character_root.set("camera_drift_axis", Vector3(axis[0], axis[1], axis[2]))
+    if _config.has("camera_drift_amount"):
+        character_root.set("camera_drift_amount", float(_config.get("camera_drift_amount")))
+    if _config.has("camera_drift_speed"):
+        character_root.set("camera_drift_speed", float(_config.get("camera_drift_speed")))
+    if _config.has("camera_drift_phase"):
+        character_root.set("camera_drift_phase", float(_config.get("camera_drift_phase")))
 
     var char_path := str(_config.get("character_res_path", ""))
     if char_path == "":

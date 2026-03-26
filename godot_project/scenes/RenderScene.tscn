@@ -8,6 +8,8 @@
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 
+[node name="BackgroundRoot" type="Node3D" parent="."]
+
 [node name="BackgroundPlane" type="MeshInstance3D" parent="."]
 
 [node name="CharacterRoot" type="Node3D" parent="."]

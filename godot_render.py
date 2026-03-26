@@ -193,6 +193,14 @@ def main():
     )
     assets_changed = assets_changed or bg_changed
 
+    # Background 3D scene (FBX/GLB/GLTF/TSN)
+    bg_scene_src = scene.get("background_scene_file_path", "")
+    bg_scene_dst, bg_scene_changed = _prepare_asset(
+        bg_scene_src,
+        godot_project / "Assets" / "Backgrounds",
+    )
+    assets_changed = assets_changed or bg_scene_changed
+
     # Audio (no conversion)
     audio_src = scene.get("audio_file_path", "")
     audio_dst, audio_changed = _prepare_asset(
@@ -209,6 +217,8 @@ def main():
         godot_scene["animation_res_path"] = _res_path(godot_project, anim_dst)
     if bg_dst:
         godot_scene["background_res_path"] = _res_path(godot_project, bg_dst)
+    if bg_scene_dst:
+        godot_scene["background_scene_res_path"] = _res_path(godot_project, bg_scene_dst)
     if audio_dst:
         godot_scene["audio_res_path"] = _res_path(godot_project, audio_dst)
 

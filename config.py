@@ -17,6 +17,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 ASSETS_DIR = PROJECT_ROOT / "Assets"
 CHARACTERS_DIR = ASSETS_DIR / "Characters"
 ANIMATIONS_LIB = ASSETS_DIR / "Animations" / "Library"
+BACKGROUNDS_DIR = ASSETS_DIR / "Backgrounds"
+BACKGROUNDS_LIB = BACKGROUNDS_DIR / "Library"
 MASTER_BLEND = PROJECT_ROOT / "Master_Scene.blend"
 OUTPUT_DIR = PROJECT_ROOT / "Outputs"
 TEMP_DIR = PROJECT_ROOT / "temp_renders"
@@ -83,9 +85,16 @@ IMAGE_HEIGHT = 1920
 KOKORO_VOICE = "af_heart"  # Default voice
 KOKORO_SPEED = 1.0
 KOKORO_SAMPLE_RATE = 24000
+KOKORO_DEFAULT_LANG = "en"
+KOKORO_LANG_MAP = {
+    "en": "a",  # American English
+}
+KOKORO_VOICE_NARRATOR = "af_heart"
+KOKORO_VOICE_CHARACTER = "af_heart"
 
 # ─── Whisper (Subtitle Generation) ───────────────────────────────────
 WHISPER_MODEL = "base"  # tiny, base, small, medium, large
+SUBTITLE_WORDS_PER_LINE = 1
 
 # ─── FFmpeg Subtitles ────────────────────────────────────────────────
 SUBTITLE_FONT = "Arial"
@@ -99,8 +108,23 @@ SUBTITLE_POSITION_Y = 250  # Pixels from bottom
 MAX_SCENES = 8
 TARGET_DURATION_SEC = 60
 MAX_ANIMATION_CANDIDATES = 10  # Top-N animations sent to LLM for selection
+DEFAULT_NARRATION_MODE = "third"
+DEFAULT_CAMERA_MOTION = "random"
 
 # ─── Animation Categories (mirrors organize_animations.py) ──────────
 ANIMATION_CATEGORIES = [
     "talk", "idle", "reaction", "action", "transition", "walking",
+]
+
+# ─── Background Categories (3D scenes) ───────────────────────────────
+BACKGROUND_CATEGORIES = [
+    "forest",
+    "school",
+    "city",
+    "interior",
+    "beach",
+    "garden",
+    "village",
+    "cave",
+    "mountain",
 ]
