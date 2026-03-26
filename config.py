@@ -27,6 +27,16 @@ BLENDER_BIN = os.getenv(
     "/Applications/Blender.app/Contents/MacOS/Blender"
 )
 
+# ─── Godot ──────────────────────────────────────────────────────────
+GODOT_PROJECT_DIR = PROJECT_ROOT / "godot_project"
+GODOT_BIN = os.getenv(
+    "GODOT_BIN",
+    "/Applications/Godot.app/Contents/MacOS/Godot"
+)
+GODOT_DISPLAY_DRIVER = os.getenv("GODOT_DISPLAY_DRIVER", "")
+GODOT_RENDERING_DRIVER = os.getenv("GODOT_RENDERING_DRIVER", "")
+GODOT_FALLBACK_DISPLAY_DRIVER = os.getenv("GODOT_FALLBACK_DISPLAY_DRIVER", "")
+
 # ─── Render Settings ─────────────────────────────────────────────────
 RENDER_WIDTH = 1080
 RENDER_HEIGHT = 1920
@@ -92,6 +102,5 @@ MAX_ANIMATION_CANDIDATES = 10  # Top-N animations sent to LLM for selection
 
 # ─── Animation Categories (mirrors organize_animations.py) ──────────
 ANIMATION_CATEGORIES = [
-    "WALK", "RUN", "JUMP", "TALK_GESTURE", "SIT_STAND",
-    "DANCE", "SPORTS", "DAILY_LIFE", "ANIMAL", "MISC",
+    "talk", "idle", "reaction", "action", "transition", "walking",
 ]

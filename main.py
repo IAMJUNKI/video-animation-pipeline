@@ -2,7 +2,7 @@
 main.py — The Orchestrator for the 3D AI Content Pipeline.
 
 Converts a story idea into a fully rendered 3D-animated YouTube Short (9:16).
-Pipeline: G4F Script → Semantic Director → Kokoro TTS → Flux BG → Blender → FFmpeg
+Pipeline: G4F Script → Semantic Director → Kokoro TTS → Flux BG → Godot → FFmpeg
 
 Usage:
     python main.py "A curious turtle discovers a hidden garden"
@@ -297,20 +297,61 @@ def semantic_director(scene: dict) -> Path:
     1. List all animations in the chosen category.
     2. Send the top candidates to the LLM to pick the best match.
     """
-    category = scene.get("anim_category", "TALK_GESTURE")
+    category = scene.get("anim_category", "talk")
     emotion = scene.get("emotion", "neutral")
     dialogue = scene.get("dialogue", "")
 
+    category_aliases = {
+        "talk_gesture": "talk",
+        "talk": "talk",
+        "walk": "walking",
+        "walking": "walking",
+        "run": "walking",
+        "jump": "action",
+        "sit_stand": "idle",
+        "idle": "idle",
+        "reaction": "reaction",
+        "action": "action",
+        "transition": "transition",
+        "dance": "action",
+        "sports": "action",
+        "daily_life": "action",
+        "animal": "action",
+        "misc": "reaction",
+    }
+
+    category_key = str(category).strip().lower()
+    if category_key in category_aliases:
+        category = category_aliases[category_key]
+
+    def _collect_fbx_files(path: Path, recursive: bool = False) -> list[Path]:
+        if not path.exists():
+            return []
+        pattern = "**/*.fbx" if recursive else "*.fbx"
+        return sorted(path.glob(pattern))
+
+    selected_category = category
     cat_dir = config.ANIMATIONS_LIB / category
-    if not cat_dir.exists():
-        log.warning(f"  ⚠️ Category '{category}' not found, falling back to TALK_GESTURE")
-        cat_dir = config.ANIMATIONS_LIB / "TALK_GESTURE"
-        if not cat_dir.exists():
-            cat_dir = config.ANIMATIONS_LIB / "MISC"
+    fbx_files = _collect_fbx_files(cat_dir)
+    if not fbx_files:
+        log.warning(f"  ⚠️ Category '{category}' not found or empty, falling back to TALK_GESTURE")
+        selected_category = "TALK_GESTURE"
+        cat_dir = config.ANIMATIONS_LIB / selected_category
+        fbx_files = _collect_fbx_files(cat_dir)
+    if not fbx_files:
+        log.warning("  ⚠️ TALK_GESTURE empty, falling back to MISC")
+        selected_category = "MISC"
+        cat_dir = config.ANIMATIONS_LIB / selected_category
+        fbx_files = _collect_fbx_files(cat_dir)
+    if not fbx_files:
+        # Last resort: grab any FBX in the library tree
+        selected_category = "ANY"
+        cat_dir = config.ANIMATIONS_LIB
+        fbx_files = _collect_fbx_files(cat_dir) or _collect_fbx_files(cat_dir, recursive=True)
 
     # Pass 1: Get all animation files and extract descriptions
     anims = []
-    for fbx_file in sorted(cat_dir.glob("*.fbx")):
+    for fbx_file in fbx_files:
         # Filename format: 02_01_walk_forward.fbx → desc = "walk forward"
         name = fbx_file.stem
         parts = name.split("_", 2)  # Split off the ID prefix
@@ -328,7 +369,7 @@ def semantic_director(scene: dict) -> Path:
 
 Scene dialogue: "{dialogue}"
 Scene emotion: {emotion}
-Animation category: {category}
+Animation category: {selected_category}
 
 Available animations (index — description):
 {chr(10).join(f"  {i}. {c['description']} (file: {c['name']})" for i, c in enumerate(candidates))}
@@ -424,11 +465,11 @@ def generate_background(description: str, output_path: Path):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  6. BLENDER RENDERING (subprocess)
+#  6. GODOT RENDERING (subprocess)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def render_scene(scene_data: dict, scene_dir: Path, dry_run: bool = False) -> Path:
     """
-    Write scene JSON and invoke Blender headless to render.
+    Write scene JSON and invoke Godot headless to render.
     Returns: path to rendered .mp4 clip.
     """
     json_path = scene_dir / "scene_data.json"
@@ -438,19 +479,18 @@ def render_scene(scene_data: dict, scene_dir: Path, dry_run: bool = False) -> Pa
         json.dump(scene_data, f, indent=2, default=str)
 
     cmd = [
-        str(config.BLENDER_BIN),
-        "-b", str(config.MASTER_BLEND),
-        "-P", str(config.PROJECT_ROOT / "render_engine.py"),
-        "--", "--scene_data", str(json_path),
+        sys.executable,
+        str(config.PROJECT_ROOT / "godot_render.py"),
+        "--scene_data", str(json_path),
     ]
 
-    log.info(f"  🎬 Blender command: {' '.join(cmd[-6:])}")
+    log.info(f"  🎬 Godot command: {' '.join(cmd[-3:])}")
 
     if dry_run:
-        log.info("  ⏭️  [DRY-RUN] Skipping Blender render")
+        log.info("  ⏭️  [DRY-RUN] Skipping Godot render")
         return output_mp4
 
-    # Run blender and stream output so it doesn't look frozen
+    # Run Godot and stream output so it doesn't look frozen
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -459,22 +499,18 @@ def render_scene(scene_data: dict, scene_dir: Path, dry_run: bool = False) -> Pa
         cwd=str(config.PROJECT_ROOT),
     )
 
-    # Print Blender output in real-time
+    # Print Godot output in real-time
     for line in iter(process.stdout.readline, ""):
         line_clean = line.strip()
         if line_clean:
-            # Optionally filter noisy logs here, but showing gives confidence
-            if "Saved:" in line_clean or "Fra:" in line_clean or "Error" in line_clean:
-                log.info(f"    🎥 {line_clean}")
-            elif "Time:" in line_clean:
-                log.info(f"    ⏱️ {line_clean}")
+            log.info(f"    🎥 {line_clean}")
 
     process.stdout.close()
     return_code = process.wait()
 
     if return_code != 0:
-        log.error(f"  ❌ Blender failed with code {return_code}")
-        raise RuntimeError(f"Blender render failed for scene {scene_data.get('id')}")
+        log.error(f"  ❌ Godot failed with code {return_code}")
+        raise RuntimeError(f"Godot render failed for scene {scene_data.get('id')}")
 
     log.info(f"  ✅ Rendered: {output_mp4.name}")
     return output_mp4
@@ -642,6 +678,8 @@ def assemble_final_video(
         "-f", "concat", "-safe", "0",
         "-i", str(concat_file),
         "-i", str(merged_audio),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
         "-vf", f"ass=f='{ass_file.name}'",
         "-c:v", "libx264", "-preset", "fast", "-crf", "20",
         "-c:a", "aac", "-b:a", "192k",
@@ -744,14 +782,19 @@ def run_pipeline(story_idea: str, dry_run: bool = False, draft: bool = False, te
             actual_bg = generate_background(scene["bg_description"], bg_path_expected)
             bg_path = str(actual_bg) if actual_bg else ""
 
-        # 5. Render in Blender
+        # 5. Render in Godot
         scene_render_data = {
             "id": scene_id,
-            "character_fbx": str(config.CHARACTERS_DIR / config.DEFAULT_CHARACTER),
-            "animation_fbx": str(anim_path),
-            "background_image": bg_path,
+            "scene_text": scene["dialogue"],
+            "character_file_path": str(config.CHARACTERS_DIR / config.DEFAULT_CHARACTER),
+            "animation_file_path": str(anim_path),
+            "background_image_path": bg_path,
+            "audio_file_path": str(audio_path),
             "audio_duration": audio_duration,
-            "output_video": str(scene_dir / "render.mp4"),
+            "output_mp4": str(scene_dir / "render.mp4"),
+            "output_frames_dir": str(scene_dir / "frames"),
+            "use_movie_writer": True,
+            "movie_file": str(scene_dir / "movie.avi"),
             "fps": config.RENDER_FPS,
             "resolution": [540, 960] if draft else [config.RENDER_WIDTH, config.RENDER_HEIGHT],
         }
@@ -796,7 +839,7 @@ def main():
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Run without Blender/TTS/image-gen (validates LLM + file structure)",
+        help="Run without Godot/TTS/image-gen (validates LLM + file structure)",
     )
     parser.add_argument(
         "--draft",

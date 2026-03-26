@@ -19,3 +19,18 @@ env/
 *.blend1
 *.blend2
 quit.blend
+
+# Godot project cache/imports
+godot_project/.godot/
+godot_project/.import/
+godot_project/.mono/
+godot_project/*.import
+godot_project/**/*.import
+godot_project/**/.import/
+godot_project/**/.godot/
+
+# Godot export outputs (if any)
+godot_project/export/
+
+# Godot asset staging (copied in by godot_render.py)
+godot_project/Assets/

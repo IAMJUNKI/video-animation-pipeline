@@ -60,7 +60,25 @@ else
     echo "     Or set BLENDER_BIN environment variable."
 fi
 
-# ── 4. Check FFmpeg ────────────────────────────────────────────────
+# ── 4. Check Godot ────────────────────────────────────────────────
+echo ""
+echo "🔍 Checking for Godot..."
+GODOT_PATH="/Applications/Godot.app/Contents/MacOS/Godot"
+
+if [ -f "$GODOT_PATH" ]; then
+    GODOT_VERSION=$("$GODOT_PATH" --version 2>/dev/null | head -1)
+    echo "  ✅ Godot found: $GODOT_VERSION"
+    echo "  📁 Path: $GODOT_PATH"
+elif command -v godot &> /dev/null; then
+    GODOT_VERSION=$(godot --version 2>/dev/null | head -1)
+    echo "  ✅ Godot found in PATH: $GODOT_VERSION"
+else
+    echo "  ⚠️  Godot NOT found!"
+    echo "     Install from: https://godotengine.org/download"
+    echo "     Or set GODOT_BIN environment variable."
+fi
+
+# ── 5. Check FFmpeg ────────────────────────────────────────────────
 echo ""
 echo "🔍 Checking for FFmpeg..."
 if command -v ffmpeg &> /dev/null; then
@@ -71,7 +89,7 @@ else
     echo "     Install via: brew install ffmpeg"
 fi
 
-# ── 5. Download CMU animation library (if needed) ──────────────────
+# ── 6. Download CMU animation library (if needed) ──────────────────
 echo ""
 ANIM_LIB="./Assets/Animations/Library"
 if [ -d "$ANIM_LIB" ] && [ "$(ls -A "$ANIM_LIB" 2>/dev/null)" ]; then
@@ -85,7 +103,7 @@ else
     python organize_animations.py
 fi
 
-# ── 6. Build Master_Scene.blend (if needed) ────────────────────────
+# ── 7. Build Master_Scene.blend (if needed) ────────────────────────
 echo ""
 if [ -f "Master_Scene.blend" ]; then
     echo "  ✅ Master_Scene.blend exists"
@@ -97,7 +115,7 @@ else
     }
 fi
 
-# ── 7. Final summary ──────────────────────────────────────────────
+# ── 8. Final summary ──────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "✅ Setup complete!"
