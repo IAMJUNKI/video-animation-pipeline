@@ -29,6 +29,9 @@ const PROFILE_BONE_CANDIDATES := {
 }
 
 const WARMUP_FRAMES := 5
+const GROUND_PLANE_SIZE := 30.0
+const GROUND_UV_TILE_SIZE := 10.0
+const GROUND_TEX_SIZE := 1024
 
 var _config: Dictionary = {}
 var _render_scene: Node = null
@@ -200,6 +203,8 @@ func _setup_character_and_animation() -> void:
         character_root.set("snap_distance", float(_config.get("snap_distance")))
     if _config.has("camera_snap_distance"):
         character_root.set("camera_snap_distance", float(_config.get("camera_snap_distance")))
+    if _config.has("camera_deadzone"):
+        character_root.set("camera_deadzone", float(_config.get("camera_deadzone")))
     if _config.has("loop_correction_threshold"):
         character_root.set("loop_correction_threshold", float(_config.get("loop_correction_threshold")))
     if _config.has("camera_drift_enabled"):
@@ -246,6 +251,12 @@ func _setup_character_and_animation() -> void:
 
     character_root.set("follow_bone_name", follow_name)
     character_root.set("root_bone_name", root_name)
+    _ensure_ground_plane(
+        character_root,
+        target_skel,
+        target_bone_map,
+        str(_config.get("bg_category", ""))
+    )
 
     var anim_player := _find_animation_player(char_instance)
     if anim_player == null:
@@ -321,6 +332,210 @@ func _load_packed_scene(path: String) -> PackedScene:
     if res is PackedScene:
         return res
     return null
+
+func _ensure_ground_plane(
+    character_root: Node3D,
+    skel: Skeleton3D,
+    bone_map: BoneMap,
+    category: String
+) -> void:
+    var plane := _render_scene.get_node_or_null("GroundPlane") as MeshInstance3D
+    if plane == null:
+        plane = MeshInstance3D.new()
+        plane.name = "GroundPlane"
+        _render_scene.add_child(plane)
+    if plane.mesh == null:
+        var pm := PlaneMesh.new()
+        pm.size = Vector2(GROUND_PLANE_SIZE, GROUND_PLANE_SIZE)
+        plane.mesh = pm
+    plane.material_override = _ground_material_for_category(category)
+
+    var center := character_root.global_transform.origin
+    var ground_y := center.y
+    if skel != null:
+        var foot_y: float = _find_lowest_foot_y(skel, bone_map)
+        if not is_nan(foot_y):
+            ground_y = foot_y
+    plane.global_transform.origin = Vector3(center.x, ground_y - 0.01, center.z)
+    plane.visible = true
+
+func _find_lowest_foot_y(skel: Skeleton3D, bone_map: BoneMap) -> float:
+    if skel == null:
+        return NAN
+
+    var left_name := ""
+    var right_name := ""
+    if bone_map != null:
+        var mapped_left := bone_map.get_skeleton_bone_name("LeftFoot")
+        if mapped_left != StringName():
+            left_name = String(mapped_left)
+        var mapped_right := bone_map.get_skeleton_bone_name("RightFoot")
+        if mapped_right != StringName():
+            right_name = String(mapped_right)
+
+    if left_name == "":
+        left_name = "LeftFoot"
+    if right_name == "":
+        right_name = "RightFoot"
+
+    var left_idx := skel.find_bone(left_name)
+    var right_idx := skel.find_bone(right_name)
+
+    if left_idx == -1:
+        if bone_map != null:
+            var mapped_left_toes := bone_map.get_skeleton_bone_name("LeftToes")
+            if mapped_left_toes != StringName():
+                left_idx = skel.find_bone(String(mapped_left_toes))
+        if left_idx == -1 and skel.find_bone("LeftToes") != -1:
+            left_idx = skel.find_bone("LeftToes")
+
+    if right_idx == -1:
+        if bone_map != null:
+            var mapped_right_toes := bone_map.get_skeleton_bone_name("RightToes")
+            if mapped_right_toes != StringName():
+                right_idx = skel.find_bone(String(mapped_right_toes))
+        if right_idx == -1 and skel.find_bone("RightToes") != -1:
+            right_idx = skel.find_bone("RightToes")
+
+    var found := false
+    var min_y := 0.0
+
+    if left_idx != -1:
+        var left_pose := skel.get_bone_global_pose(left_idx)
+        var left_global := skel.global_transform * left_pose
+        min_y = left_global.origin.y
+        found = true
+
+    if right_idx != -1:
+        var right_pose := skel.get_bone_global_pose(right_idx)
+        var right_global := skel.global_transform * right_pose
+        if not found:
+            min_y = right_global.origin.y
+            found = true
+        else:
+            min_y = min(min_y, right_global.origin.y)
+
+    if not found:
+        return NAN
+    return min_y
+
+func _ground_material_for_category(category: String) -> StandardMaterial3D:
+    var key := category.strip_edges().to_lower()
+    var seed := 1337
+    if key != "":
+        seed = abs(int(key.hash()))
+
+    var tex: Texture2D = null
+    match key:
+        "school", "interior":
+            tex = _make_wood_texture(seed)
+        "forest", "garden", "village":
+            tex = _make_grass_texture(seed)
+        "beach":
+            tex = _make_sand_texture(seed)
+        "city":
+            tex = _make_concrete_texture(seed)
+        "cave", "mountain":
+            tex = _make_rock_texture(seed)
+        _:
+            tex = _make_dirt_texture(seed)
+
+    var mat := StandardMaterial3D.new()
+    mat.roughness = 1.0
+    mat.metallic = 0.0
+    mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+    mat.albedo_color = Color(1, 1, 1, 1)
+    mat.albedo_texture = tex
+    var uv_tiles: float = max(GROUND_PLANE_SIZE / GROUND_UV_TILE_SIZE, 1.0)
+    mat.uv1_scale = Vector3(uv_tiles, uv_tiles, 1.0)
+    # Use numeric enum to avoid missing symbol errors across Godot versions.
+    mat.texture_repeat = 1
+    return mat
+
+func _make_wood_texture(seed: int) -> Texture2D:
+    var w := GROUND_TEX_SIZE
+    var h := GROUND_TEX_SIZE
+    var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+    var rng := RandomNumberGenerator.new()
+    rng.seed = seed
+    for y in range(h):
+        for x in range(w):
+            var t := float(x) / float(w)
+            var stripe := 0.5 + 0.5 * sin(t * 12.0 * PI + rng.randf_range(-0.2, 0.2))
+            var noise := rng.randf_range(-0.06, 0.06)
+            var base := 0.35 + 0.25 * stripe + noise
+            var col := Color(base + 0.18, base + 0.08, base * 0.5, 1.0)
+            img.set_pixel(x, y, col)
+    return ImageTexture.create_from_image(img)
+
+func _make_grass_texture(seed: int) -> Texture2D:
+    var w := GROUND_TEX_SIZE
+    var h := GROUND_TEX_SIZE
+    var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+    var rng := RandomNumberGenerator.new()
+    rng.seed = seed
+    for y in range(h):
+        for x in range(w):
+            var n := rng.randf_range(-0.08, 0.08)
+            var g := 0.45 + n
+            var col := Color(0.12 + n * 0.4, g, 0.12 + n * 0.2, 1.0)
+            img.set_pixel(x, y, col)
+    return ImageTexture.create_from_image(img)
+
+func _make_sand_texture(seed: int) -> Texture2D:
+    var w := GROUND_TEX_SIZE
+    var h := GROUND_TEX_SIZE
+    var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+    var rng := RandomNumberGenerator.new()
+    rng.seed = seed
+    for y in range(h):
+        for x in range(w):
+            var n := rng.randf_range(-0.05, 0.05)
+            var col := Color(0.78 + n, 0.72 + n * 0.8, 0.55 + n * 0.6, 1.0)
+            img.set_pixel(x, y, col)
+    return ImageTexture.create_from_image(img)
+
+func _make_concrete_texture(seed: int) -> Texture2D:
+    var w := GROUND_TEX_SIZE
+    var h := GROUND_TEX_SIZE
+    var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+    var rng := RandomNumberGenerator.new()
+    rng.seed = seed
+    for y in range(h):
+        for x in range(w):
+            var n := rng.randf_range(-0.06, 0.06)
+            var base := 0.55 + n
+            var col := Color(base, base, base, 1.0)
+            img.set_pixel(x, y, col)
+    return ImageTexture.create_from_image(img)
+
+func _make_rock_texture(seed: int) -> Texture2D:
+    var w := GROUND_TEX_SIZE
+    var h := GROUND_TEX_SIZE
+    var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+    var rng := RandomNumberGenerator.new()
+    rng.seed = seed
+    for y in range(h):
+        for x in range(w):
+            var n := rng.randf_range(-0.08, 0.08)
+            var base := 0.28 + n
+            var col := Color(base, base * 0.95, base * 0.9, 1.0)
+            img.set_pixel(x, y, col)
+    return ImageTexture.create_from_image(img)
+
+func _make_dirt_texture(seed: int) -> Texture2D:
+    var w := GROUND_TEX_SIZE
+    var h := GROUND_TEX_SIZE
+    var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+    var rng := RandomNumberGenerator.new()
+    rng.seed = seed
+    for y in range(h):
+        for x in range(w):
+            var n := rng.randf_range(-0.06, 0.06)
+            var base := 0.4 + n
+            var col := Color(base * 0.9, base * 0.85, base * 0.7, 1.0)
+            img.set_pixel(x, y, col)
+    return ImageTexture.create_from_image(img)
 
 func _ensure_loop(anim: Animation) -> void:
     if anim == null:

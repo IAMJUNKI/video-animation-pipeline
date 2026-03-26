@@ -9,6 +9,7 @@ extends Node3D
 @export var lock_root_motion: bool = true
 @export var snap_distance: float = 0.5
 @export var camera_snap_distance: float = 0.75
+@export var camera_deadzone: float = 0.05
 @export var loop_correction_threshold: float = 0.75
 @export var camera_drift_enabled: bool = false
 @export var camera_drift_axis: Vector3 = Vector3(1.0, 0.0, 0.0)
@@ -65,11 +66,17 @@ func _process(delta: float) -> void:
             axis = axis.normalized()
             var drift = axis * sin(_drift_time * camera_drift_speed + camera_drift_phase) * camera_drift_amount
             cam_target += drift
+        var current_pos := _camera_rig.global_transform.origin
+        var offset := cam_target - current_pos
+        var dist := offset.length()
+        var desired := cam_target
+        if camera_deadzone > 0.0 and dist > camera_deadzone and dist > 0.0001:
+            desired = cam_target - offset.normalized() * camera_deadzone
         var t2: float = min(max(delta * smooth_speed, 0.0), 1.0)
-        if not _initialized or _camera_rig.global_transform.origin.distance_to(cam_target) > camera_snap_distance:
-            _camera_rig.global_transform.origin = cam_target
-        else:
-            _camera_rig.global_transform.origin = _camera_rig.global_transform.origin.lerp(cam_target, t2)
+        if not _initialized:
+            _camera_rig.global_transform.origin = desired
+        elif dist > camera_deadzone:
+            _camera_rig.global_transform.origin = current_pos.lerp(desired, t2)
         _camera_rig.look_at(follow_global.origin + look_at_offset, Vector3.UP)
     _initialized = true
 

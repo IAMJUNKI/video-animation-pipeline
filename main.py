@@ -167,61 +167,47 @@ def llm_chat(messages: list[dict], expect_json: bool = False) -> str:
 
 
 def llm_generate_image(prompt: str, output_path: Path) -> Path:
-    """Generate a 9:16 image using G4F Flux or DALL-E fallback."""
-    # ── Try G4F image generation ──
+    """Generate a vertical 9:16 image using Gemini 3.1 Flash Image preview."""
+    log.info(f"  🎨 Generating image with Gemini...")
     try:
-        from g4f.client import Client as G4FClient
-        from g4f.cookies import set_cookies
+        from google import genai
         
-        if config.BING_U_COOKIE:
-            set_cookies(".bing.com", {"_U": config.BING_U_COOKIE})
+        if not config.GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY is not set.")
+
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
+        
+        # Using the exact same call structure as character_generator.py
+        response = client.models.generate_content(
+            model="gemini-3.1-flash-image-preview",
+            contents=[prompt]
+        )
+
+        if not response.candidates or not response.candidates[0].content.parts:
+            raise RuntimeError("No image data returned by the model.")
+
+        # Extract the image bytes from the response parts
+        image_bytes = None
+        for part in response.candidates[0].content.parts:
+            if part.inline_data:
+                image_bytes = part.inline_data.data
+                break
+                
+        if not image_bytes:
+             raise RuntimeError("No inline image data found in the response.")
+
+        # Save the bytes directly
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "wb") as f:
+            f.write(image_bytes)
             
-        client = G4FClient()
-        for model in config.G4F_IMAGE_MODELS:
-            try:
-                log.info(f"  🎨 Trying G4F image model: {model}")
-                response = client.images.generate(
-                    model=model,
-                    prompt=prompt,
-                    response_format="url",
-                )
-                image_url = response.data[0].url
+        log.info(f"  ✅ Image saved: {output_path.name}")
+        return output_path
 
-                # Download the image
-                import urllib.request
-                urllib.request.urlretrieve(image_url, str(output_path))
-                if output_path.exists() and output_path.stat().st_size > 1000:
-                    log.info(f"  ✅ Image saved: {output_path.name}")
-                    return output_path
-            except Exception as e:
-                log.warning(f"  ⚠️ G4F/{model} image gen failed: {e}")
-                continue
-    except ImportError:
-        log.warning("  ⚠️ g4f not installed")
-
-    # ── Fallback: OpenAI DALL-E ──
-    if config.OPENAI_API_KEY:
-        log.info("  🔑 Falling back to OpenAI DALL-E 3")
-        try:
-            from openai import OpenAI
-            import urllib.request
-            client = OpenAI(api_key=config.OPENAI_API_KEY)
-            response = client.images.generate(
-                model="dall-e-3",
-                prompt=prompt,
-                size="1024x1792",  # Closest 9:16 DALL-E supports
-                quality="standard",
-                n=1,
-            )
-            urllib.request.urlretrieve(response.data[0].url, str(output_path))
-            log.info(f"  ✅ DALL-E image saved: {output_path.name}")
-            return output_path
-        except Exception as e:
-            log.error(f"  ❌ DALL-E failed: {e}")
-
-    log.warning("  ⚠️ All image generation providers failed. Skipping background.")
-    return None
-
+    except Exception as e:
+        log.error(f"  ❌ Gemini Image generation failed: {e}")
+        log.warning("  ⚠️ Skipping background.")
+        return None
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  2. SCRIPT GENERATION
@@ -277,6 +263,12 @@ def generate_script(story_idea: str, max_scenes: int = 0, narration_mode: str = 
     
     if max_scenes > 0:
         system = system.replace("- 5 to 8 scenes maximum", f"- Exactly {max_scenes} scenes")
+        var_min = max_scenes * 3
+        var_max = max_scenes * 6
+        system = system.replace(
+            "- Total dialogue should be speakable in about 50-60 seconds",
+            f"- Total dialogue should be speakable in about {var_min}-{var_max} seconds"
+        )
 
     messages = [
         {"role": "system", "content": system},
