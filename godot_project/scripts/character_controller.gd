@@ -29,48 +29,56 @@ func _ready() -> void:
     _refresh_refs()
 
 func _process(delta: float) -> void:
-    if _skeleton == null:
+    if _camera_rig == null:
         _refresh_refs()
-        return
 
-    if _follow_bone_idx == -1:
-        _follow_bone_idx = _skeleton.find_bone(follow_bone_name)
-    if _root_bone_idx == -1:
-        _root_bone_idx = _skeleton.find_bone(root_bone_name)
-    if _follow_bone_idx == -1:
-        return
+    if _skeleton != null:
+        if _follow_bone_idx == -1:
+            _follow_bone_idx = _skeleton.find_bone(follow_bone_name)
+        if _root_bone_idx == -1:
+            _root_bone_idx = _skeleton.find_bone(root_bone_name)
+        if _follow_bone_idx == -1:
+            return
 
-    var follow_pose: Transform3D = _skeleton.get_bone_global_pose(_follow_bone_idx)
-    var root_pose: Transform3D = follow_pose
-    if _root_bone_idx != -1:
-        root_pose = _skeleton.get_bone_global_pose(_root_bone_idx)
+        var follow_pose: Transform3D = _skeleton.get_bone_global_pose(_follow_bone_idx)
+        var root_pose: Transform3D = follow_pose
+        if _root_bone_idx != -1:
+            root_pose = _skeleton.get_bone_global_pose(_root_bone_idx)
 
-    if lock_root_motion:
-        var root_local := root_pose.origin
-        if _has_last_root_local:
-            var delta_root := root_local - _last_root_local
-            if delta_root.length() <= loop_correction_threshold:
-                global_transform.origin -= Vector3(delta_root.x, 0.0, delta_root.z)
-        _last_root_local = root_local
-        _has_last_root_local = true
+        if lock_root_motion:
+            var root_local := root_pose.origin
+            if _has_last_root_local:
+                var delta_root := root_local - _last_root_local
+                if delta_root.length() <= loop_correction_threshold:
+                    global_transform.origin -= Vector3(delta_root.x, 0.0, delta_root.z)
+            _last_root_local = root_local
+            _has_last_root_local = true
 
-    if _camera_rig != null:
         var follow_global: Transform3D = _skeleton.global_transform * follow_pose
-        var cam_target := follow_global.origin + (global_transform.basis * camera_offset)
-        if camera_drift_enabled:
-            _drift_time += delta
-            var axis := camera_drift_axis
-            if axis.length() < 0.001:
-                axis = Vector3(1.0, 0.0, 0.0)
-            axis = axis.normalized()
-            var drift = axis * sin(_drift_time * camera_drift_speed + camera_drift_phase) * camera_drift_amount
-            cam_target += drift
-        var t2: float = min(max(delta * smooth_speed, 0.0), 1.0)
-        if not _initialized or _camera_rig.global_transform.origin.distance_to(cam_target) > camera_snap_distance:
-            _camera_rig.global_transform.origin = cam_target
-        else:
-            _camera_rig.global_transform.origin = _camera_rig.global_transform.origin.lerp(cam_target, t2)
-        _camera_rig.look_at(follow_global.origin + look_at_offset, Vector3.UP)
+        _apply_camera_follow(delta, follow_global.origin)
+        return
+
+    _apply_camera_follow(delta, global_transform.origin)
+
+func _apply_camera_follow(delta: float, follow_origin: Vector3) -> void:
+    if _camera_rig == null:
+        return
+
+    var cam_target := follow_origin + (global_transform.basis * camera_offset)
+    if camera_drift_enabled:
+        _drift_time += delta
+        var axis := camera_drift_axis
+        if axis.length() < 0.001:
+            axis = Vector3(1.0, 0.0, 0.0)
+        axis = axis.normalized()
+        var drift = axis * sin(_drift_time * camera_drift_speed + camera_drift_phase) * camera_drift_amount
+        cam_target += drift
+    var t2: float = min(max(delta * smooth_speed, 0.0), 1.0)
+    if not _initialized or _camera_rig.global_transform.origin.distance_to(cam_target) > camera_snap_distance:
+        _camera_rig.global_transform.origin = cam_target
+    else:
+        _camera_rig.global_transform.origin = _camera_rig.global_transform.origin.lerp(cam_target, t2)
+    _camera_rig.look_at(follow_origin + look_at_offset, Vector3.UP)
     _initialized = true
 
 func _refresh_refs() -> void:

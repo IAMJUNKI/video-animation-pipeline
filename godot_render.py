@@ -169,8 +169,18 @@ def main():
 
     assets_changed = False
 
-    # Character
-    character_src = scene.get("character_file_path") or str(config.CHARACTERS_DIR / config.DEFAULT_CHARACTER)
+    # Character image (2.5D sprite)
+    character_image_src = scene.get("character_image_path", "")
+    char_image_dst, char_image_changed = _prepare_asset(
+        character_image_src,
+        godot_project / "Assets" / "Characters",
+    )
+    assets_changed = assets_changed or char_image_changed
+
+    # Character 3D (FBX/GLB)
+    character_src = scene.get("character_file_path", "")
+    if not character_src and not character_image_src:
+        character_src = str(config.CHARACTERS_DIR / config.DEFAULT_CHARACTER)
     char_dst, char_changed = _prepare_asset(
         character_src,
         godot_project / "Assets" / "Characters",
@@ -211,6 +221,8 @@ def main():
 
     # Build Godot scene data
     godot_scene = dict(scene)
+    if char_image_dst:
+        godot_scene["character_image_res_path"] = _res_path(godot_project, char_image_dst)
     if char_dst:
         godot_scene["character_res_path"] = _res_path(godot_project, char_dst)
     if anim_dst:

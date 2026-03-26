@@ -184,6 +184,20 @@ func _load_texture(path: String) -> Texture2D:
         return null
     return ImageTexture.create_from_image(image)
 
+func _load_texture_any(path: String, label: String) -> Texture2D:
+    if path == "":
+        return null
+    if ResourceLoader.exists(path):
+        var res: Resource = load(path)
+        if res is Texture2D:
+            return res
+    var image := Image.new()
+    var err := image.load(path)
+    if err != OK:
+        push_warning("Failed to load %s image: %s" % [label, path])
+        return null
+    return ImageTexture.create_from_image(image)
+
 func _setup_character_and_animation() -> void:
     var character_root := _render_scene.get_node("CharacterRoot") as Node3D
     var cam_offset: Array = _config.get("camera_offset", [])
@@ -214,6 +228,37 @@ func _setup_character_and_animation() -> void:
         character_root.set("camera_drift_speed", float(_config.get("camera_drift_speed")))
     if _config.has("camera_drift_phase"):
         character_root.set("camera_drift_phase", float(_config.get("camera_drift_phase")))
+
+    var sprite_path := str(_config.get("character_image_res_path", ""))
+    if sprite_path == "":
+        sprite_path = str(_config.get("character_image_path", ""))
+
+    if sprite_path != "":
+        var sprite_tex := _load_texture_any(sprite_path, "character")
+        if sprite_tex != null:
+            var sprite := Sprite3D.new()
+            sprite.name = "CharacterSprite"
+            sprite.texture = sprite_tex
+            sprite.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
+
+            var shader_res: Resource = load("res://shaders/chroma_key_sprite3d.gdshader")
+            if shader_res is Shader:
+                var shader_mat := ShaderMaterial.new()
+                shader_mat.shader = shader_res
+                shader_mat.set_shader_parameter("sprite_texture", sprite_tex)
+                sprite.material_override = shader_mat
+
+            var sprite_script: Resource = load("res://scripts/character_sprite_25d.gd")
+            if sprite_script is Script:
+                sprite.set_script(sprite_script)
+                var state := str(_config.get("character_state", "idle")).strip_edges().to_lower()
+                if state != "idle" and state != "talking" and state != "walking":
+                    state = "idle"
+                if sprite.has_method("apply_character_state"):
+                    sprite.call("apply_character_state", state)
+
+            character_root.add_child(sprite)
+            return
 
     var char_path := str(_config.get("character_res_path", ""))
     if char_path == "":

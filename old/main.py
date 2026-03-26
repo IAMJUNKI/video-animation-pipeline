@@ -1,8 +1,8 @@
 """
-main.py — The Orchestrator for the 2.5D AI Content Pipeline.
+main.py — The Orchestrator for the 3D AI Content Pipeline.
 
-Converts a story idea into a fully rendered 2.5D YouTube Short (9:16).
-Pipeline: G4F Script → Kokoro TTS → BG → Godot → FFmpeg
+Converts a story idea into a fully rendered 3D-animated YouTube Short (9:16).
+Pipeline: G4F Script → Semantic Director → Kokoro TTS → Flux BG → Godot → FFmpeg
 
 Usage:
     python main.py "A curious turtle discovers a hidden garden"
@@ -17,6 +17,7 @@ import subprocess
 import sys
 import wave
 from pathlib import Path
+from typing import Optional
 
 import config
 
@@ -166,52 +167,65 @@ def llm_chat(messages: list[dict], expect_json: bool = False) -> str:
 
 
 def llm_generate_image(prompt: str, output_path: Path) -> Path:
-    """Generate a vertical 9:16 image using Gemini 3.1 Flash Image preview."""
-    log.info(f"  🎨 Generating image with Gemini...")
+    """Generate a 9:16 image using G4F Flux or DALL-E fallback."""
+    # ── Try G4F image generation ──
     try:
-        from google import genai
+        from g4f.client import Client as G4FClient
+        from g4f.cookies import set_cookies
         
-        if not config.GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY is not set.")
-
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
-        
-        # Using the exact same call structure as character_generator.py
-        response = client.models.generate_content(
-            model="gemini-3.1-flash-image-preview",
-            contents=[prompt]
-        )
-
-        if not response.candidates or not response.candidates[0].content.parts:
-            raise RuntimeError("No image data returned by the model.")
-
-        # Extract the image bytes from the response parts
-        image_bytes = None
-        for part in response.candidates[0].content.parts:
-            if part.inline_data:
-                image_bytes = part.inline_data.data
-                break
-                
-        if not image_bytes:
-             raise RuntimeError("No inline image data found in the response.")
-
-        # Save the bytes directly
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "wb") as f:
-            f.write(image_bytes)
+        if config.BING_U_COOKIE:
+            set_cookies(".bing.com", {"_U": config.BING_U_COOKIE})
             
-        log.info(f"  ✅ Image saved: {output_path.name}")
-        return output_path
+        client = G4FClient()
+        for model in config.G4F_IMAGE_MODELS:
+            try:
+                log.info(f"  🎨 Trying G4F image model: {model}")
+                response = client.images.generate(
+                    model=model,
+                    prompt=prompt,
+                    response_format="url",
+                )
+                image_url = response.data[0].url
 
-    except Exception as e:
-        log.error(f"  ❌ Gemini Image generation failed: {e}")
-        log.warning("  ⚠️ Skipping background.")
-        return None
+                # Download the image
+                import urllib.request
+                urllib.request.urlretrieve(image_url, str(output_path))
+                if output_path.exists() and output_path.stat().st_size > 1000:
+                    log.info(f"  ✅ Image saved: {output_path.name}")
+                    return output_path
+            except Exception as e:
+                log.warning(f"  ⚠️ G4F/{model} image gen failed: {e}")
+                continue
+    except ImportError:
+        log.warning("  ⚠️ g4f not installed")
+
+    # ── Fallback: OpenAI DALL-E ──
+    if config.OPENAI_API_KEY:
+        log.info("  🔑 Falling back to OpenAI DALL-E 3")
+        try:
+            from openai import OpenAI
+            import urllib.request
+            client = OpenAI(api_key=config.OPENAI_API_KEY)
+            response = client.images.generate(
+                model="dall-e-3",
+                prompt=prompt,
+                size="1024x1792",  # Closest 9:16 DALL-E supports
+                quality="standard",
+                n=1,
+            )
+            urllib.request.urlretrieve(response.data[0].url, str(output_path))
+            log.info(f"  ✅ DALL-E image saved: {output_path.name}")
+            return output_path
+        except Exception as e:
+            log.error(f"  ❌ DALL-E failed: {e}")
+
+    log.warning("  ⚠️ All image generation providers failed. Skipping background.")
+    return None
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  2. SCRIPT GENERATION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CHARACTER_STATES = ["idle", "talking", "walking"]
-
 SCRIPT_SYSTEM_PROMPT = """\
 You are a creative director for animated YouTube Shorts (vertical 9:16, ~60 seconds).
 Given a story idea, write a script as a JSON object.
@@ -224,8 +238,8 @@ Rules:
   - third: narrator only (speaker="narrator")
   - first: character only (speaker="character")
   - mixed: narrator + occasional character line
-- Choose a character state from this list for each scene:
-  {character_states}
+- Choose an animation category from this list for each scene:
+  {categories}
 - Choose a 3D background category from this list:
   {bg_categories}
 - Include an emotion tag for each scene
@@ -237,7 +251,7 @@ Respond with ONLY valid JSON (no markdown fences):
     {{
       "id": 1,
       "emotion": "curious|happy|sad|excited|angry|scared|thoughtful|playful",
-      "character_state": "<one of the character states above>",
+      "anim_category": "<one of the animation categories above>",
       "bg_category": "<one of the background categories above>",
       "lines": [
         {{ "speaker": "narrator|character", "text": "..." }}
@@ -252,17 +266,17 @@ def generate_script(story_idea: str, max_scenes: int = 0, narration_mode: str = 
     """Ask the LLM to generate a structured script from a story idea."""
     log.info("📝 Step 1: Generating script...")
 
-    character_states = ", ".join(CHARACTER_STATES)
+    categories = ", ".join(config.ANIMATION_CATEGORIES)
     bg_categories = ", ".join(config.BACKGROUND_CATEGORIES)
     narration = narration_mode or config.DEFAULT_NARRATION_MODE
     system = SCRIPT_SYSTEM_PROMPT.format(
-        character_states=character_states,
+        categories=categories,
         bg_categories=bg_categories,
         narration_mode=narration,
     )
     
-    # if max_scenes > 0:
-    #     system = system.replace("- 5 to 8 scenes maximum", f"- Exactly {max_scenes} scenes")
+    if max_scenes > 0:
+        system = system.replace("- 5 to 8 scenes maximum", f"- Exactly {max_scenes} scenes")
 
     messages = [
         {"role": "system", "content": system},
@@ -345,10 +359,8 @@ def _pick_camera_params(scene_id: int, motion: str, seed: int | None) -> dict:
     base_y, base_z = 1.0, 2.0
     look_at_offset = [0.0, 0.0, 0.0]
 
-    # magnitudes = [0.0, 0.6, 1.2, 1.8]
-    # vertical_options = [-0.25, 0.0, 0.25]
-    magnitudes = [0.0, 0.1, -0.1] 
-    vertical_options = [-0.1, 0.0, 0.1]
+    magnitudes = [0.0, 0.6, 1.2, 1.8]
+    vertical_options = [-0.25, 0.0, 0.25]
 
     idx = (seed or 1337) + int(scene_id) * 1013
     rng = random.Random(idx)
@@ -397,7 +409,125 @@ def _pick_camera_params(scene_id: int, motion: str, seed: int | None) -> dict:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  3. VOICE GENERATION (Kokoro TTS)
+#  3. SEMANTIC DIRECTOR — Intelligent animation selection
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def semantic_director(scene: dict) -> Path:
+    """
+    Two-pass animation selection:
+    1. List all animations in the chosen category.
+    2. Send the top candidates to the LLM to pick the best match.
+    """
+    category = scene.get("anim_category", "talk")
+    emotion = scene.get("emotion", "neutral")
+    dialogue = scene.get("dialogue", "")
+    if not dialogue and isinstance(scene.get("lines"), list):
+        dialogue = " ".join(str(l.get("text", "")).strip() for l in scene["lines"] if l.get("text"))
+
+    category_aliases = {
+        "talk_gesture": "talk",
+        "talk": "talk",
+        "walk": "walking",
+        "walking": "walking",
+        "run": "walking",
+        "jump": "action",
+        "sit_stand": "idle",
+        "idle": "idle",
+        "reaction": "reaction",
+        "action": "action",
+        "transition": "transition",
+        "dance": "action",
+        "sports": "action",
+        "daily_life": "action",
+        "animal": "action",
+        "misc": "reaction",
+    }
+
+    category_key = str(category).strip().lower()
+    if category_key in category_aliases:
+        category = category_aliases[category_key]
+
+    def _collect_fbx_files(path: Path, recursive: bool = False) -> list[Path]:
+        if not path.exists():
+            return []
+        pattern = "**/*.fbx" if recursive else "*.fbx"
+        return sorted(path.glob(pattern))
+
+    selected_category = category
+    cat_dir = config.ANIMATIONS_LIB / category
+    fbx_files = _collect_fbx_files(cat_dir)
+    if not fbx_files:
+        log.warning(f"  ⚠️ Category '{category}' not found or empty, falling back to TALK_GESTURE")
+        selected_category = "TALK_GESTURE"
+        cat_dir = config.ANIMATIONS_LIB / selected_category
+        fbx_files = _collect_fbx_files(cat_dir)
+    if not fbx_files:
+        log.warning("  ⚠️ TALK_GESTURE empty, falling back to MISC")
+        selected_category = "MISC"
+        cat_dir = config.ANIMATIONS_LIB / selected_category
+        fbx_files = _collect_fbx_files(cat_dir)
+    if not fbx_files:
+        # Last resort: grab any FBX in the library tree
+        selected_category = "ANY"
+        cat_dir = config.ANIMATIONS_LIB
+        fbx_files = _collect_fbx_files(cat_dir) or _collect_fbx_files(cat_dir, recursive=True)
+
+    # Pass 1: Get all animation files and extract descriptions
+    anims = []
+    for fbx_file in fbx_files:
+        # Filename format: 02_01_walk_forward.fbx → desc = "walk forward"
+        name = fbx_file.stem
+        parts = name.split("_", 2)  # Split off the ID prefix
+        desc = parts[2].replace("_", " ") if len(parts) > 2 else name.replace("_", " ")
+        anims.append({"file": str(fbx_file), "name": fbx_file.name, "description": desc})
+
+    if not anims:
+        raise FileNotFoundError(f"No .fbx files found in {cat_dir}")
+
+    # Limit to top N candidates (by simple keyword overlap)
+    candidates = _rank_candidates(anims, emotion, dialogue)[:config.MAX_ANIMATION_CANDIDATES]
+
+    # Pass 2: Ask LLM to pick the best
+    prompt = f"""Pick the BEST animation for this scene.
+
+Scene dialogue: "{dialogue}"
+Scene emotion: {emotion}
+Animation category: {selected_category}
+
+Available animations (index — description):
+{chr(10).join(f"  {i}. {c['description']} (file: {c['name']})" for i, c in enumerate(candidates))}
+
+Respond with ONLY the index number (e.g., "3"). Nothing else."""
+
+    messages = [
+        {"role": "system", "content": "You are an animation director. Pick the single best animation."},
+        {"role": "user", "content": prompt},
+    ]
+
+    response = llm_chat(messages)
+    try:
+        idx = int(response.strip().split()[0].rstrip("."))
+        idx = max(0, min(idx, len(candidates) - 1))
+    except (ValueError, IndexError):
+        idx = 0
+
+    chosen = Path(candidates[idx]["file"])
+    log.info(f"  🎭 Chosen animation: {chosen.name} (emotion: {emotion})")
+    return chosen
+
+
+def _rank_candidates(anims: list[dict], emotion: str, dialogue: str) -> list[dict]:
+    """Simple keyword-overlap ranking to pre-filter candidates."""
+    keywords = set((emotion + " " + dialogue).lower().split())
+
+    def score(anim):
+        desc_words = set(anim["description"].lower().split())
+        return len(keywords & desc_words)
+
+    return sorted(anims, key=score, reverse=True)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  4. VOICE GENERATION (Kokoro TTS)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def _kokoro_lang_code(lang: str) -> str:
     code = (lang or "").strip().lower()
@@ -772,7 +902,6 @@ def run_pipeline(
     tts_voice: str = None,
     tts_voice_narrator: str = None,
     tts_voice_character: str = None,
-    character_image_path: str | None = None,
     subtitle_words: int | None = None,
     camera_motion: str | None = None,
     camera_seed: int | None = None,
@@ -781,7 +910,7 @@ def run_pipeline(
     """Full pipeline: story → rendered YouTube Short."""
 
     log.info("=" * 60)
-    log.info(f"🚀 2.5D AI Content Pipeline")
+    log.info(f"🚀 3D AI Content Pipeline")
     log.info(f"📖 Story: '{story_idea}'")
     mode_str = []
     if dry_run:
@@ -798,7 +927,6 @@ def run_pipeline(
     # Ensure directories exist
     config.TEMP_DIR.mkdir(parents=True, exist_ok=True)
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    (config.PROJECT_ROOT / "characters").mkdir(parents=True, exist_ok=True)
 
     # Check Master_Scene.blend
     if not config.MASTER_BLEND.exists() and not dry_run:
@@ -832,16 +960,6 @@ def run_pipeline(
         "character": tts_voice_character,
     }
 
-    if not character_image_path:
-        character_image_path = str(config.PROJECT_ROOT / "characters" / "latest.png")
-
-    char_image = Path(character_image_path)
-    if not char_image.is_absolute():
-        char_image = (config.PROJECT_ROOT / char_image).resolve()
-    character_image_path = str(char_image)
-    if not dry_run and not char_image.exists():
-        log.warning(f"  ⚠️ Character image not found: {character_image_path}")
-
     script = generate_script(story_idea, max_scenes=test_scenes, narration_mode=narration_mode)
     import re
     title = re.sub(r'[^a-z0-9_]', '', script.get("title", "untitled").replace(" ", "_").lower())[:30]
@@ -864,12 +982,15 @@ def run_pipeline(
         scene_dir = config.TEMP_DIR / f"scene_{scene_id:02d}"
         scene_dir.mkdir(parents=True, exist_ok=True)
 
-        # 2. Resolve character state
-        state_raw = str(scene.get("character_state", "")).strip().lower()
-        if state_raw not in CHARACTER_STATES:
-            if state_raw:
-                log.warning(f"  ⚠️ Unknown character_state '{state_raw}', defaulting to 'idle'")
-            state_raw = "idle"
+        # 2. Semantic Director — choose animation
+        if dry_run:
+            try:
+                anim_path = semantic_director(scene)
+            except Exception as e:
+                log.warning(f"  ⚠️ Semantic director skipped: {e}")
+                anim_path = Path("placeholder.fbx")
+        else:
+            anim_path = semantic_director(scene)
 
         # 3. Generate voice audio
         audio_path = scene_dir / "dialogue.wav"
@@ -880,24 +1001,22 @@ def run_pipeline(
         else:
             audio_duration = generate_scene_audio(lines, audio_path, voice_map, tts_lang)
 
-        # 4. Generate 2D Background Image
-        bg_image_path = scene_dir / "background.png"
+        # 4. Pick 3D background scene (green screen fallback)
         if dry_run:
-            log.info("  ⏭️  [DRY-RUN] Skipping background generation")
+            log.info("  ⏭️  [DRY-RUN] Skipping background selection")
+            bg_scene_path = ""
         else:
-            # Tell the LLM image generator what to draw based on the script
-            bg_prompt = f"A {scene.get('bg_category', 'scenic')} background, empty landscape"
-            generate_background(bg_prompt, bg_image_path)
+            bg_scene_path = _pick_background_scene(scene, bg_category, camera_seed)
 
         # 5. Render in Godot
         cam_params = _pick_camera_params(scene_id, camera_motion, camera_seed)
         scene_render_data = {
             "id": scene_id,
             "scene_text": " ".join([l["text"] for l in lines]) if lines else scene.get("dialogue", ""),
-            "character_image_path": character_image_path,
-            "character_state": state_raw,
+            "character_file_path": str(config.CHARACTERS_DIR / config.DEFAULT_CHARACTER),
+            "animation_file_path": str(anim_path),
             "background_image_path": "",
-            "background_scene_file_path": "",
+            "background_scene_file_path": bg_scene_path,
             "audio_file_path": str(audio_path),
             "audio_duration": audio_duration,
             "output_mp4": str(scene_dir / "render.mp4"),
@@ -939,7 +1058,7 @@ def run_pipeline(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def main():
     parser = argparse.ArgumentParser(
-        description="2.5D AI Content Pipeline — Story → YouTube Short"
+        description="3D AI Content Pipeline — Story → YouTube Short"
     )
     parser.add_argument(
         "story",
@@ -994,12 +1113,6 @@ def main():
         help="Kokoro voice for character (mixed mode)",
     )
     parser.add_argument(
-        "--character-image",
-        type=str,
-        default=str(config.PROJECT_ROOT / "characters" / "latest.png"),
-        help="Path to the 2.5D character sprite (PNG with chroma green background)",
-    )
-    parser.add_argument(
         "--subtitle-words",
         type=str,
         default=str(config.SUBTITLE_WORDS_PER_LINE),
@@ -1037,7 +1150,6 @@ def main():
             tts_voice=args.tts_voice,
             tts_voice_narrator=args.tts_voice_narrator,
             tts_voice_character=args.tts_voice_character,
-            character_image_path=args.character_image,
             subtitle_words=args.subtitle_words,
             camera_motion=args.camera_motion,
             camera_seed=args.camera_seed,
